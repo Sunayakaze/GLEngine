@@ -1,0 +1,55 @@
+#version 450
+
+#pragma optimize(on)
+#pragma debug(off)
+
+#extension GL_ARB_compute_shader                : enable
+#extension GL_ARB_shader_storage_buffer_object  : enable
+
+//#extension GL_ARB_compute_variable_group_size   : enable
+//#extension GL_NV_shader_atomic_float            : enable
+//#extension GL_NV_cooperative_matrix             : enable
+
+//  #extension GL_KHR_memory_scope_semantics        : enable
+//  #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+
+precision highp float;
+
+layout(location = 02) uniform float iGlobalTime;
+
+layout(local_size_x=16, local_size_y=16, local_size_z=1) in;
+//  layout(local_size_variable) in;
+
+layout(binding=1) buffer ai { float a[]; };
+layout(binding=2) buffer bi { float b[]; };
+layout(binding=3) buffer xo { float x[]; };
+layout(binding=4) buffer yo { float y[]; };
+
+layout(binding=5) uniform atomic_uint AddSuccess;
+layout(binding=5) uniform atomic_uint MulSuccess;
+layout(binding=5) uniform atomic_uint TotalCount;
+
+// ----------------------------------------------------------------------
+
+void main( )
+{
+//  uvec3 wi    = uvec3(gl_WorkGroupID);
+    uvec3 li    = uvec3(gl_LocalInvocationID);
+    uvec3 gi    = uvec3(gl_GlobalInvocationID);
+
+    uvec3 ws    = uvec3(gl_WorkGroupSize);
+    uvec3 nw    = uvec3(gl_NumWorkGroups);
+
+    uint w      = ws.x * nw.x;
+//  uint h      = ws.y * nw.y;
+//  uint s      = h * w;
+
+    uint i      = gi.x + (gi.y * w);
+    x[i]        = a[i] + b[i];
+    y[i]        = a[i] * b[i];
+
+    atomicCounterIncrement(TotalCount);
+
+    if(x[i] == 3.0) atomicCounterIncrement(AddSuccess);
+    if(y[i] == 2.0) atomicCounterIncrement(MulSuccess);
+}

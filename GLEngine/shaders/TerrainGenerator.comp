@@ -1,0 +1,127 @@
+#version 450
+
+#pragma optimize(off)
+#pragma debug(on)
+
+#extension GL_ARB_compute_shader                : enable
+#extension GL_ARB_shader_storage_buffer_object  : enable
+
+precision highp float;
+
+layout(location = 02) uniform float iGlobalTime;
+
+layout(local_size_x=1, local_size_y=1, local_size_z=1) in;
+
+//  2 triangles but no ushort
+struct tri2 { uint  a, b, c; };
+struct v3   { float x, y, z; };
+
+//  Attributes
+layout(std430, binding=1) buffer VER { v3 ver[]; };
+layout(std430, binding=2) buffer NOR { v3 nor[]; };
+layout(std430, binding=3) buffer TAN { v3 tan[]; };
+layout(std430, binding=4) buffer BIT { v3 bit[]; };
+layout(std430, binding=5) buffer UNV { vec2 uvc[]; };
+layout(std430, binding=6) buffer FCS { tri2 fac[]; };
+
+// ----------------------------------------------------------------------
+
+#define seed 20
+
+#define time iGlobalTime
+
+float Interpolate(float x, float y, float a)
+{
+	float na	= 1.0 - a;
+	float asq	= a * a;
+	float nasq = na * na;
+	float f1 = 3.0 * nasq - 2.0 * nasq * na;
+    float f2 = 3.0 * asq - 2.0 * asq * a;
+
+    return x * f1 + y * f2; //add the weighted factors
+}
+
+float Noise(int x, int y)
+{
+	int n = x + y * 57 + seed;
+    n = (n << 13) ^ n;
+	int t = (n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff;	// = 2.147.483.647
+	float f = t;
+    f = f * 0.931322574615478515625e-9;									// * 0.9313e-9
+	return f / 2;														// = 1.999999999068677425384521484375		
+}
+
+float Noise2(int x, int y)
+{
+    return fract(sin(dot(vec2(x,y), vec2(12.9898,78.233)))*43758.5453123);
+}
+
+float GetValue(vec2 i)
+{
+	float x = i.x;
+	float y = i.y;
+	
+	int xi = int(x);
+	int yi = int(y);
+	float Xfrac = x - xi;
+	float Yfrac = y - yi;
+
+	float x0y0 = 0.5 * Noise2(xi,   yi);
+	float x1y0 = 0.5 * Noise2(xi+1, yi);
+	float x0y1 = 0.5 * Noise2(xi,   yi+1);
+	float x1y1 = 0.5 * Noise2(xi+1, yi+1);
+	
+	//interpolate between those values according to the x and y fractions
+	float v1 = Interpolate(x0y0, x1y0, Xfrac);
+	float v2 = Interpolate(x0y1, x1y1, Xfrac);
+	float ret = Interpolate(v1, v2, Yfrac);
+	
+    return ret;
+}
+
+void main( )
+{
+    uvec3 wi        = (uvec3(gl_WorkGroupID)).xyz;
+    uvec3 li        = (uvec3(gl_LocalInvocationID)).xyz;
+    uvec2 gi        = (uvec3(gl_GlobalInvocationID)).xy;
+
+    uvec3 ws        = (uvec3(gl_WorkGroupSize)).xyz;
+    uvec3 nw        = (uvec3(gl_NumWorkGroups)).xyz;
+
+    uint w          = ws.x * nw.x;                                                 //  Width
+    uint h          = ws.y * nw.y;                                                 //  Height
+    uint t          = w - 1;                                                       //  NrTiles
+    uint i          = gi.x + (gi.y * w);                                           //  Index
+
+    vec2 c          = vec2(gi.xy) / 64.0;
+
+	float f0 = 2.00; float a0 = 1.0/f0;
+	float f1 = 2*f0; float a1 = 1.0/f1;
+	float f2 = 2*f1; float a2 = 1.0/f2;
+	float f3 = 2*f2; float a3 = 1.0/f3;
+	float f4 = 2*f3; float a4 = 1.0/f4;
+	float f5 = 2*f4; float a5 = 1.0/f5;
+	float f6 = 2*f5; float a6 = 1.0/f6;
+	float f7 = 2*f6; float a7 = 1.0/f7;
+	float f8 = 2*f7; float a8 = 1.0/f8;
+	float f9 = 2*f8; float a9 = 1.0/f9;
+
+	float n1, n2, n3, n4, n5, n6;
+	n1 = n2 = n3 = n4 = n5 = n6 = 0.0;
+
+	n1 = a0*GetValue(f0*c);
+	n2 = a1*GetValue(f1*c);
+	n3 = a2*GetValue(f2*c);
+	n4 = a3*GetValue(f3*c);
+	n5 = a4*GetValue(f4*c);
+	n6 = a5*GetValue(f5*c);
+    
+    ver[i].y = (n1+n2+n3+n4+n5+n6)*8.0;
+/*
+    ver[i].x = s.x; ver[i].y = n1;  ver[i].z = s.y;
+    nor[i].x = 0.0; nor[i].y = 1.0; nor[i].z = 0.0;
+    tan[i].x = 1.0; tan[i].y = 0.0; tan[i].z = 0.0;
+    bit[i].x = 0.0; bit[i].y = 0.0; bit[i].z =-1.0;
+    uvc[i] = vec2(u.x, u.y);
+*/
+}

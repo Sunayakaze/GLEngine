@@ -1,0 +1,169 @@
+#version 450
+#pragma optimize(off)
+#pragma debug(on)
+
+layout(location = 01) uniform vec2          iResolution;                  // viewport resolution (in pixels)
+layout(location = 02) uniform float         iGlobalTime;                  // shader playback time (in seconds)
+layout(location = 03) uniform vec4          iMouse;                       // mouse pixel coords
+layout(location = 04) uniform vec4          iDate;                        // (year, month, day, time in seconds)
+layout(location = 05) uniform float         iSampleRate;                  // sound sample rate (i.e., 44100)
+layout(location = 06) uniform vec3          iChannelResolution[4];        // channel resolution (in pixels)
+layout(location = 10) uniform float         iChannelTime[4];              // channel playback time (in sec)
+layout(location = 14) uniform vec2          ifFragCoordOffsetUniform;     // used for tiled based hq rendering
+layout(location = 15) uniform float         iTimeDelta;                   // render time (in seconds)
+layout(location = 16) uniform int           iFrame;                       // shader playback frame
+
+layout(local_size_x=12, local_size_y=12, local_size_z=1) in;
+
+layout(rgba32f, binding=0) uniform image2D  Channel0;
+layout(rgba32f, binding=1) uniform image2D  Channel1;
+layout(rgba32f, binding=2) uniform image2D  Channel2;
+layout(rgba32f, binding=3) uniform image2D  Channel3;
+
+#define seed 20
+#define pi2	6.283185307179586476925286766559
+
+#define time iGlobalTime * 0.25
+
+//	Octave defines
+
+#define f0 2.000000000
+#define f1 4.000000000
+#define f2 8.000000000
+#define f3 16.00000000
+#define f4 32.00000000
+#define f5 64.00000000
+#define f6 128.0000000
+#define f7 256.0000000
+#define f8 512.0000000
+
+#define a0 0000.500000
+#define a1 000.2500000
+#define a2 00.12500000
+#define a3 0.062500000
+#define a4 0.031250000
+#define a5 0.015625000
+#define a6 0.007812500
+#define a7 0.003906250
+#define a8 0.001953125
+
+float Interpolate(float x, float y, float a)
+{
+	float na	= 1.0 - a;
+	float asq	= a * a;
+	float nasq = na * na;
+	float r1 = 3.0 * nasq - 2.0 * nasq * na;
+    float r2 = 3.0 * asq - 2.0 * asq * a;
+
+    return x * r1 + y * r2; //add the weighted factors
+}
+
+/*
+float Noise(int x, int y)
+{
+	int n = x + y * 57 + seed;
+    n = (n << 13) ^ n;
+	int t = (n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff;	// = 2.147.483.647
+	float f = t;
+    f = f * 0.931322574615478515625e-9;									// * 0.9313e-9
+	return f / 2;														// = 1.999999999068677425384521484375		
+}
+
+float Noise(int x, int y, int z)
+{
+	int n = x + y * 57 + z * 78 + seed;
+    n = (n << 13) ^ n;
+	int t = (n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff;	// = 2.147.483.647
+	float f = t;
+    f = f * 0.931322574615478515625e-9;									// * 0.9313e-9
+	return f / 2;														// = 1.999999999068677425384521484375		
+}
+*/
+
+float Noise(float x, float y)
+{
+    return fract( sin( dot( vec2(x,y), vec2(12.9898,78.233 ) ) ) * 43758.5453123 );
+}
+
+float Noise(float x, float y, float z)
+{
+    return fract( sin( dot( vec3(x,y,z), vec3(12.9898, 57.09313, 78.233) ) ) * 43758.5453123 );
+}
+
+float GetValue(vec2 i)
+{
+	float x = i.x;
+	float y = i.y;
+	
+	int xi = int(x);
+	int yi = int(y);
+	float Xfrac = x - xi;
+	float Yfrac = y - yi;
+
+	float x0y0 = 0.5 * Noise(xi,   yi);
+	float x1y0 = 0.5 * Noise(xi+1, yi);
+	float x0y1 = 0.5 * Noise(xi,   yi+1);
+	float x1y1 = 0.5 * Noise(xi+1, yi+1);
+	
+	//interpolate between those values according to the x and y fractions
+	float v1  = Interpolate(x0y0, x1y0, Xfrac);
+	float v2  = Interpolate(x0y1, x1y1, Xfrac);
+	float ret = Interpolate(v1, v2, Yfrac);
+	
+    return ret;
+}
+
+float GetValue(vec3 i)
+{
+	float x = i.x; int xi = int(x); float xf = x - xi;	
+	float y = i.y; int yi = int(y); float yf = y - yi;
+	float z = i.z; int zi = int(z); float zf = z - zi;
+	
+	float x0y0z0 = 0.5 * Noise(xi,   yi,   zi);
+	float x1y0z0 = 0.5 * Noise(xi+1, yi,   zi);
+	float x0y1z0 = 0.5 * Noise(xi,   yi+1, zi);
+	float x1y1z0 = 0.5 * Noise(xi+1, yi+1, zi);
+	float x0y0z1 = 0.5 * Noise(xi,   yi,   zi+1);
+	float x1y0z1 = 0.5 * Noise(xi+1, yi,   zi+1);
+	float x0y1z1 = 0.5 * Noise(xi,   yi+1, zi+1);
+	float x1y1z1 = 0.5 * Noise(xi+1, yi+1, zi+1);
+	
+	float v10 = Interpolate(x0y0z0, x1y0z0, xf);
+	float v20 = Interpolate(x0y1z0, x1y1z0, xf);
+	float v11 = Interpolate(x0y0z1, x1y0z1, xf);
+	float v21 = Interpolate(x0y1z1, x1y1z1, xf);
+	float vt0 = Interpolate(v10, 	v20, 	yf);
+	float vt1 = Interpolate(v11, 	v21, 	yf);
+	float ret = Interpolate(vt0, 	vt1, 	zf);
+	
+    return ret;
+}
+
+float GetPixelDensity(vec3 loc)
+{
+	float n1 = a0 * GetValue(f0 * loc);
+	float n2 = a1 * GetValue(f1 * loc);
+	float n3 = a2 * GetValue(f2 * loc);
+	float n4 = a3 * GetValue(f3 * loc);
+	float n5 = a4 * GetValue(f4 * loc);
+	float n6 = a5 * GetValue(f5 * loc);
+	
+	return n1 + n2 + n3 + n4 + n5 + n6;
+	//	pi2
+}
+
+// -----------------------------------------------
+
+void main( )
+{
+    ivec2 Coord 		= ivec2(gl_GlobalInvocationID.xy);
+    vec2 Resolution 	= vec2(imageSize(Channel0));
+
+    vec2 p 				= vec2(Coord.xy) / Resolution;
+	vec2 uv 			= p*vec2(Resolution.x/Resolution.y,1.0);
+
+	float pix			= GetPixelDensity(vec3(uv, time));
+    vec4 Color0			= vec4( pix, pix, pix, 1.0 );
+
+    imageStore(Channel0, Coord, Color0);
+}

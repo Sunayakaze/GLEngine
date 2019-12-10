@@ -1,0 +1,148 @@
+#version 450
+#pragma optimize(off)
+#pragma debug(on)
+
+#extension GL_ARB_compute_shader                : enable
+#extension GL_ARB_shader_storage_buffer_object  : enable
+#extension GL_ARB_shader_image_size				: enable
+
+#define 										f0 2.000000000
+#define 										f1 4.000000000
+#define 										f2 8.000000000
+#define 										f3 16.00000000
+#define 										f4 32.00000000
+#define 										f5 64.00000000
+#define 										f6 128.0000000
+#define 										f7 256.0000000
+#define 										f8 512.0000000
+
+#define 										a0 0000.500000
+#define 										a1 000.2500000
+#define 										a2 00.12500000
+#define 										a3 0.062500000
+#define 										a4 0.031250000
+#define 										a5 0.015625000
+#define 										a6 0.007812500
+#define 										a7 0.003906250
+#define 										a8 0.001953125
+
+struct v2
+{
+	float		x;
+	float		y;
+};
+
+layout(			local_size_x=24,
+				local_size_y=24,
+				local_size_z=1) in;
+
+layout(			location=02) uniform float		iGlobalTime;		// shader playback time (in seconds)
+layout(			location=03) uniform vec4		iMouse;				// mouse pixel coords
+
+layout(rgba32f, binding=00) uniform image2D		Channel0;
+layout(rgba32f, binding=01) uniform image2D		Channel1;
+
+layout(std430,  binding=00) buffer 				Pos { v2 pos[]; };
+layout(std430,  binding=01) buffer 				Vel { v2 vel[]; };
+
+#define seed 									10
+#define two_pi									6.283185307179586476925286766559
+
+#define time									iGlobalTime * 1.0
+
+float Interpolate(float x, float y, float a)
+{
+	float na	= 1.0 - a;
+	float asq	= a * a;
+	float nasq	= na * na;
+	float q1	= 3.0 * nasq - 2.0 * nasq * na;
+    float q2	= 3.0 * asq - 2.0 * asq * a;
+
+    return x * q1 + y * q2; //add the weighted factors
+}
+
+float Noise(float x, float y, float z)
+{
+    return fract( sin( dot( vec3(x,y,z), vec3(12.9898, 57.09313, 78.233) ) ) * 43758.5453123 );
+}
+
+float GetValue(vec3 I)
+{
+	float x = I.x; int xi = int(x); float xf = x - xi;	
+	float y = I.y; int yi = int(y); float yf = y - yi;
+	float z = I.z; int zi = int(z); float zf = z - zi;
+	
+	float x0y0z0 = 0.5 * Noise(xi,   yi,   zi);
+	float x1y0z0 = 0.5 * Noise(xi+1, yi,   zi);
+	float x0y1z0 = 0.5 * Noise(xi,   yi+1, zi);
+	float x1y1z0 = 0.5 * Noise(xi+1, yi+1, zi);
+	float x0y0z1 = 0.5 * Noise(xi,   yi,   zi+1);
+	float x1y0z1 = 0.5 * Noise(xi+1, yi,   zi+1);
+	float x0y1z1 = 0.5 * Noise(xi,   yi+1, zi+1);
+	float x1y1z1 = 0.5 * Noise(xi+1, yi+1, zi+1);
+	
+	float v10 = Interpolate(x0y0z0, x1y0z0, xf);
+	float v20 = Interpolate(x0y1z0, x1y1z0, xf);
+	float v11 = Interpolate(x0y0z1, x1y0z1, xf);
+	float v21 = Interpolate(x0y1z1, x1y1z1, xf);
+	float vt0 = Interpolate(v10, 	v20, 	yf);
+	float vt1 = Interpolate(v11, 	v21, 	yf);
+	float ret = Interpolate(vt0, 	vt1, 	zf);
+	
+    return ret;
+}
+
+float GetPixelDensity(vec3 loc)
+{
+	float n1 = a0 * GetValue(f0 * loc);
+	float n2 = a1 * GetValue(f1 * loc);
+	float n3 = a2 * GetValue(f2 * loc);
+	float n4 = a3 * GetValue(f3 * loc);
+	float n5 = a4 * GetValue(f4 * loc);
+	float n6 = a5 * GetValue(f5 * loc);
+	
+	return n1 + n2 + n3 + n4 + n5 + n6;
+	//	pi2
+}
+
+// -----------------------------------------------
+
+#define Acceleration	0.33
+#define MaxSpeed		1.0
+
+void main( )
+{
+    ivec2	R 			= imageSize(Channel0);												//	Resolution
+	uint	I			= gl_GlobalInvocationID.x + (gl_GlobalInvocationID.y * R.x);
+
+	ivec2 Coord			= ivec2(pos[I].x, pos[I].y);
+	vec2 p 				= vec2(Coord.xy) / R;
+	vec2 uv 			= p*vec2(R.x/R.y,1.0);
+
+	float 	gr			= two_pi * GetPixelDensity(vec3(uv*4.0, time)) * 4.0;
+	vec2 	dir			= vec2(cos(gr), sin(gr));
+
+	vel[I].x 		   += (Acceleration * dir.x);
+	vel[I].y 		   += (Acceleration * dir.y);
+
+	float v				= length(vec2(vel[I].x, vel[I].y));
+
+	if(v > MaxSpeed) {
+		vel[I].x 	   /= (v/MaxSpeed);
+		vel[I].y 	   /= (v/MaxSpeed);
+	}
+
+	pos[I].x 		   += vel[I].x;
+	pos[I].y 		   += vel[I].y;
+
+	if(pos[I].x > R.x) pos[I].x = 0.0;//vel[I].x * -1.0;
+	if(pos[I].y > R.y) pos[I].y = 0.0;//vel[I].y * -1.0;
+	if(pos[I].x < 0.0) pos[I].x = R.x;//vel[I].x * -1.0;
+	if(pos[I].y < 0.0) pos[I].y = R.y;//vel[I].y * -1.0;
+
+	vec2 c1 			= 0.0001 * vec2((dir+1.0)/2.0);
+	float c3			= 0.1 * cos((time+1.0)/2.0);
+	vec4 Color 			= imageLoad(Channel0, Coord) + vec4(c1.x, 0.0, c1.y , 1.0);
+
+    imageStore(Channel0, Coord, Color);
+}

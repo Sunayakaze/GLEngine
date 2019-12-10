@@ -1,0 +1,88 @@
+#version 450
+
+#pragma optimize(on)
+#pragma debug(off)
+
+#extension GL_ARB_compute_shader                : enable
+#extension GL_ARB_shader_storage_buffer_object  : enable
+
+precision highp float;
+
+layout(location = 02) uniform float iGlobalTime;
+
+layout(local_size_x=1, local_size_y=1, local_size_z=1) in;
+
+//  2 triangles but no ushort
+struct tri2 { uint a, b, c; };
+struct v3   { float x, y, z; };
+
+//  Attributes
+layout(std430, binding=1) buffer VER { v3 ver[]; };
+layout(std430, binding=2) buffer NOR { v3 nor[]; };
+layout(std430, binding=3) buffer TAN { v3 tan[]; };
+layout(std430, binding=4) buffer BIT { v3 bit[]; };
+layout(std430, binding=5) buffer UNV { vec2 uvc[]; };
+layout(std430, binding=6) buffer FCS { tri2 fac[]; };
+
+//  Atomic counters
+layout(binding=7) uniform atomic_uint TotalExecutions;
+layout(binding=7) uniform atomic_uint VerticesOK;
+layout(binding=7) uniform atomic_uint NormalsOK;
+layout(binding=7) uniform atomic_uint TangentsOK;
+layout(binding=7) uniform atomic_uint BitansOK;
+layout(binding=7) uniform atomic_uint UVCoordsOK;
+layout(binding=7) uniform atomic_uint FacesOK;
+
+// ----------------------------------------------------------------------
+
+void main( )
+{
+    uvec3 wi        = (uvec3(gl_WorkGroupID)).xyz;
+    uvec3 li        = (uvec3(gl_LocalInvocationID)).xyz;
+    uvec2 gi        = (uvec3(gl_GlobalInvocationID)).xy;
+
+    uvec3 ws        = (uvec3(gl_WorkGroupSize)).xyz;
+    uvec3 nw        = (uvec3(gl_NumWorkGroups)).xyz;
+
+    uint w          = ws.x * nw.x;                                                 //  Width
+    uint h          = ws.y * nw.y;                                                 //  Height
+    uint t          = w - 1;                                                       //  NrTiles
+    uint i          = gi.x + (gi.y * w);                                           //  Index
+
+    //  Set up the indices per tile
+    if((gi.x < t) && (gi.y < t)) {
+        uint p      = gi.x + (gi.y * t);                                           //  Tile
+
+        uint x0y0   = i;                                                           //  Upper left corner
+        uint x1y0   = i + 1;                                                       //  Upper right corner
+        uint x0y1   = i + w;                                                       //  Lower left corner
+        uint x1y1   = i + w + 1;                                                   //  Lower Right corner
+
+        uint f1     = (x0y0<<0x10) | x1y0;
+        uint f2     = (x1y0<<0x10) | x0y1;
+        uint f3     = (x1y1<<0x10) | x0y1;
+
+        if( ( fac[p].a == f1 ) &&
+            ( fac[p].b == f2 ) &&
+            ( fac[p].c == f3 ) ) {
+            atomicCounterIncrement(FacesOK);
+        }
+    }
+
+    //  zero center
+    vec2 s = vec2(gi) - vec2(
+        (float(w)-1.0)/2.0,
+        (float(h)-1.0)/2.0);
+    s *= 16.0;
+
+    //  reduce to number between 0..1
+    vec2 u = vec2(gi) / vec2(w-1,h-1);
+    
+    if( vec3(ver[i].x, ver[i].y, ver[i].z) == vec3(s.x, 0.0, s.y) ) atomicCounterIncrement(VerticesOK);
+    if( vec3(nor[i].x, nor[i].y, nor[i].z) == vec3(0.0, 1.0, 0.0) ) atomicCounterIncrement(NormalsOK);
+    if( vec3(tan[i].x, tan[i].y, tan[i].z) == vec3(1.0, 0.0, 0.0) ) atomicCounterIncrement(TangentsOK);
+    if( vec3(bit[i].x, bit[i].y, bit[i].z) == vec3(0.0, 0.0,-1.0) ) atomicCounterIncrement(BitansOK);
+    if( uvc[i]                             == vec2(u.x, u.y)      ) atomicCounterIncrement(UVCoordsOK);
+
+    atomicCounterIncrement(TotalExecutions);
+}
